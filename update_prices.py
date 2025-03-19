@@ -3,11 +3,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import datetime
 import logging
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine,text
 from sqlalchemy.orm import sessionmaker
 from bs4 import BeautifulSoup
 from urllib.request import Request,urlopen
-from api_test.models import ETFPrice
 
 
 DATABASE_URL = "postgresql://backtest:backtest@127.0.0.1:5432/backtest"
@@ -59,14 +58,17 @@ def update_prices():
             if new_price is None:
                 continue  # 가격을 가져오지 못한 경우 건너뜀
 
-            existing = session.query(ETFPrice).filter(
-                ETFPrice.ticker == ticker,
-                ETFPrice.date == today_est
-            ).first()
+            existing_query = text("SELECT id FROM prices WHERE ticker = :ticker AND date = :date")
+            existing = session.execute(existing_query, {"ticker": ticker, "date": today_est}).fetchone()
+
 
             # 기존 데이터가 없거나 가격이 변동된 경우만 업데이트
             if not existing:
-                session.add(ETFPrice(ticker=ticker, date=today_est, price=new_price))
+                insert_query = text("""
+                    INSERT INTO prices (date, ticker, price) 
+                    VALUES (:date, :ticker, :price)
+                """)
+                session.execute(insert_query, {"date": today_est, "ticker": ticker, "price": new_price})
                 update_rows += 1
 
         session.commit()
