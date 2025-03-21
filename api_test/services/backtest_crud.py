@@ -2,7 +2,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import date,timedelta
 import pandas as pd
-
+import numpy as np
+from sqlalchemy.orm import Session
+import models
 
 def get_weekday(target_date: date):
     """주말 판별기 -> 주말이면 이전 가까운 평일로 변경"""
@@ -31,8 +33,7 @@ def get_prices(db:Session, start_date: date,weight_months: int):
 # 만약 매달 31일 인 경우 2월 계싼이 끝나면 3/29 이런식으로 바뀌어버림..
 # 해결 방법 찾아야 함.
 
-# def calculate_backtest(db : Session, data_id: int, start_year: int, start_month:int, trade_day : int, initial_balance:int, weight_months:int,fee_rate:float):
-def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day : int, weight_months:int,fee_rate:float):
+def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day : int,initial_balance:int, weight_months:int,fee_rate:float):
     """ 계산 수행 """
     
     start_date = get_weekday(date(start_year,start_month,trade_day))
@@ -50,6 +51,7 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
     
     # 거래 및 비교일 산출
     trade_dates = pd.date_range(start=pd.Timestamp(set_year,set_month,1), end=df_prices.index[-1],freq='MS')
+    
     trade_dates = [get_weekday(date + timedelta(days=trade_day-1)) for date in trade_dates]
     
     # 거래일에 해당하는 내용만 추출출
@@ -97,19 +99,78 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
         df_cal[f'prev_{col}'] = df[col].shift(1).loc[start_date:]
         df_cal[f'wb_{col}'] = df_cal[col]/df_cal[f'prev_{col}']
     
-    balances = raw_columns.drop('TIP')
+    balances = raw_columns.drop('TIP') # TIP는 판단기준이고 나머지를 대상으로 진행하기 리스트 설정
     
     for col in balances:
-        df_cal[f'wb_{col}'][0] = 0
+        df_cal[f'wb_{col}'][0] = 0 # 시작날 수익률 0        
     
+    # 초기 NAV = 이전 매매 최종NAV * 각 etf 수익률
+    # 목표 NAV = 초기NAv합 * etf별 리밸런싱
+    # 수수료 = |매매 전 각 etf NAV - 목표 NAV 각 etf| * fee_rate
+    # 수수료 적용 NAV = 초기NAV합 - 수수료 총합
+    # 최종 NAV = (수수료 적용 NAV) * 리밸런싱
     nav = 1000
     nav_list = []
-    peak_nav = nav
-    drawdown_list = []
-    prev_weights = {col: 0 for col in raw_columns}
+    fee_list = []
+    prev_weights = {etf: 0.0 for etf in balances}
+    prev_navs = {etf: 0.0 for etf in balances}
 
+    for i, row in df_cal.iterrows():
+        # 초기 navs
+        init_navs = {etf:prev_navs[etf] * float(row[f'wb_{etf}']) for etf in balances}
+        nav = sum(init_navs.values())
+        if i == start_date:
+            nav = 1000
+        
+        # 목표 nav 
+        target_navs = {etf:float(row[f'rb_{etf}'])*nav for etf in balances}
+        
+        # 수수료 
+        fees = {etf : abs(target_navs[etf]-init_navs[etf])*fee_rate for etf in balances}
+        nav -= sum(fees.values())
+        
+        # 매매 후 nav
+        after_navs = {etf: float(row[f'rb_{etf}'])*nav for etf in balances}
+        
+        nav_list.append(sum(after_navs.values()))        
+        fee_list.append(sum(fees.values()))
+        
+        prev_navs = after_navs
 
-    return df_cal
+    df_cal["nav"] = nav_list
+    df_cal["tot_fee"] = fee_list
+
+    # 전체 수익률
+    total_return = nav_list[-1] / 1000 - 1
+
+    # 연환산 수익률 (CAGR)
+    num_years = len(nav_list) / 12
+    cagr = (nav_list[-1] / 1000)**(1/num_years) - 1 if num_years > 0 else 0
+
+    # 연 변동성
+    monthly_returns = pd.Series(nav_list).pct_change().dropna()
+    volatility = monthly_returns.std() * (12 ** 0.5)
+
+    # 샤프지수
+    sharpe = cagr / volatility if volatility > 0 else 0
+
+    # 최대 낙폭 (MDD)
+    running_max = np.maximum.accumulate(nav_list)
+    drawdowns = [nav / peak - 1 for nav, peak in zip(nav_list, running_max)]
+    mdd = min(drawdowns)
     
 
-    
+
+
+    # return df_cal
+    return {
+        "output": {
+            "total_return": round(total_return, 4),
+            "cagr": round(cagr, 4),
+            "vol": round(volatility, 4),
+            "sharpe": round(sharpe, 4),
+            "mdd": round(mdd, 4),
+        },
+        "last_nav": [(f"{etf}",df_cal[f'rb_{etf}'][-1]) for etf in balances],
+    }
+        
