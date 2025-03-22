@@ -27,11 +27,12 @@ now_kst = datetime.datetime.now()
 now_est = now_kst - datetime.timedelta(hours=14)  # KST → EST (UTC-5)
 today_est = now_est.date()  # 날짜만 추출
 
-if today_est.weekday() in [5, 6]:
-    logging.info(f"EST 기준 {today_est}는 주말이므로 가격 업데이트를 실행하지 않습니다. ")
-    exit()  
+# if today_est.weekday() in [5, 6]:
+#     logging.info(f"EST 기준 {today_est}는 주말이므로 가격 업데이트를 실행하지 않습니다. ")
+#     exit()  
     
-tickers = ['SPY','QQQ','GLD','TIP','BIL']
+tickers_db = session.execute(text("SELECT DISTINCT ticker FROM prices"))
+tickers = [row[0] for row in tickers_db.fetchall()]
 
 def fetch_price(ticker):
     """ ETF 가격 데이터를 가져오는 함수"""
@@ -51,7 +52,7 @@ def update_prices():
     """ 데이터를 DB에 업데이트하는 함수"""
     session = SessionLocal()
     update_rows = 0
-
+    which_tk = []
     try:
         for ticker in tickers:
             new_price = fetch_price(ticker)
@@ -70,9 +71,10 @@ def update_prices():
                 """)
                 session.execute(insert_query, {"date": today_est, "ticker": ticker, "price": new_price})
                 update_rows += 1
+                which_tk.append(ticker)
 
         session.commit()
-        logging.info(f"{update_rows}개의 가격 데이터가 업데이트 되었습니다. (EST 시간 : {now_est})")
+        logging.info(f"{update_rows}개의 가격 데이터가 업데이트 되었습니다. ETF : {[tk for tk in which_tk]} (EST 시간 : {now_est})")
 
     except Exception as e:
         session.rollback()
