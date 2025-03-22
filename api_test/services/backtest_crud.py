@@ -1,10 +1,11 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text,desc
 from datetime import date,timedelta
+from dateutil.relativedelta import relativedelta
 import pandas as pd
 import numpy as np
-from sqlalchemy.orm import Session
 import models
+import calendar
 
 def get_weekday(target_date: date):
     """주말 판별기 -> 주말이면 이전 가까운 평일로 변경"""
@@ -12,11 +13,19 @@ def get_weekday(target_date: date):
         target_date -= timedelta(days=1)
     return target_date
 
+def get_valid_date(base_date: date, trade_day: int):
+    """해당 월의 최대 day 값과 입력된 trade_day 비교"""
+    year = base_date.year
+    month = base_date.month
+    last_day = calendar.monthrange(year, month)[1]
+    target_day = min(trade_day, last_day)
+    target_date = date(year, month, target_day)
+    return get_weekday(target_date)
 
 def get_prices(db:Session, start_date: date,weight_months: int):
     """날짜별 ETF 가격 가져오기"""
     
-    from_date = start_date - timedelta(days= weight_months * 31)
+    from_date = get_weekday(start_date - relativedelta(months= weight_months))
     
     prices_query = text("""
                         SELECT date,ticker,MAX(price)
@@ -30,12 +39,43 @@ def get_prices(db:Session, start_date: date,weight_months: int):
     df_pivot = df.pivot(index='date',columns='ticker',values='price')
     return df_pivot
 
-# 만약 매달 31일 인 경우 2월 계싼이 끝나면 3/29 이런식으로 바뀌어버림..
-# 해결 방법 찾아야 함.
 
-def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day : int,initial_balance:int, weight_months:int,fee_rate:float):
-    """ 계산 수행 """
+
+def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day : int, weight_months:int,fee_rate:float):
+    """ 
+    지정된 시작일과 조건에 따라 ETF 리밸런싱 백테스트를 수행하고, 성과 지표를 계산하는 함수.
+
+    백테스트 전략:
+    - weight_months 만큼 과거 가격을 비교하여 수익률 판단
+    - TIP의 수익률이 양수인 경우: 수익률 상위 2개의 ETF에 각각 50% 비중으로 리밸런싱
+    - TIP 수익률이 음수인 경우: BIL ETF에 100% 투자자
+
+    주요 수행 로직:
+    1. 시작일('start_date')을 계산하고, 과거 'weight_months'개월 포함한 가격 데이터 로드
     
+    2. 월별 매매일 기준의 유효한 거래일 목록을 계산
+        - 해당 month에 trade_day가 없는 경우 (ex. 2월 31일) 말일로 설정될 수 있도록 get_valid_date 함수 구현
+        - trade_day가 매달 정해짐에 따라 주말이 껴있는 경우 get_weekday 함수를 통해 앞 평일로 이동
+        
+    3. 각 ETF별 'wb_' (수익률), 'rb_' (리밸런싱 비중) 컬럼 생성
+        - 'wb_' 칼럼을 이용해 weight_month 전 가격과 비교 -> 'rb_'(리밸런싱) 칼럼 생성
+        - 'wb_' 칼럼을 수익률 비교로 사용하기 위해 이전 매매날짜인 1개월 전 매매날짜와 비교해 수익률 비교
+    
+    4. TIP 수익률에 따라 리밸런싱 로직 적용하여 `rb_` 비중 결정
+    
+    5. 매 시점마다 수익률 및 수수료를 반영한 NAV 계산 수행:
+        
+        반복문 수행
+        - 초기 NAV = 이전 매매 최종NAV * 각 etf 수익률
+        - 목표 NAV = 초기NAv합 * etf별 리밸런싱
+        - 수수료 = |매매 전 각 etf NAV - 목표 NAV 각 etf| * fee_rate
+        - 수수료 적용 NAV = 초기NAV합 - 수수료 총합
+        - 최종 NAV = (수수료 적용 NAV) * 리밸런싱    ==> nav_list에 저장
+
+    6. 전체 기간 NAV 리스트를 기반으로 성과 지표 계산
+    
+    """
+    # 1.
     start_date = get_weekday(date(start_year,start_month,trade_day))
     df_prices = get_prices(db,start_date,weight_months)
     
@@ -46,39 +86,31 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
         set_month = start_month - weight_months + 12
         set_year = start_year-1
     else : 
-        set_month -= weight_months
+        set_month = start_month - weight_months
         set_year = start_year
     
-    # 거래 및 비교일 산출
+    # 2.
     trade_dates = pd.date_range(start=pd.Timestamp(set_year,set_month,1), end=df_prices.index[-1],freq='MS')
+    trade_dates = [get_valid_date(date,trade_day) for date in trade_dates]
+    valid_trade_dates = [d for d in trade_dates if d in df_prices.index]
     
-    trade_dates = [get_weekday(date + timedelta(days=trade_day-1)) for date in trade_dates]
+    df = df_prices.loc[valid_trade_dates]
     
-    # 거래일에 해당하는 내용만 추출출
-    df = df_prices.loc[trade_dates]
+    raw_columns = df.columns # 초기 ETFs + TIP 
     
-    # weight_months 이전 데이터와 합치기
-    raw_columns = df.columns
-    etfs = raw_columns.drop(['BIL','TIP'])
+    etfs = raw_columns.drop(['BIL','TIP']) # 투자전략으로 사용될 ETFs
 
-    
+    # 3. 
     for col in raw_columns:
         df[f'prev_{col}'] = df[col].shift(weight_months)
-    
-    # rebalance 계산
-    # df_cal : 계산을 위한 데이터프레임으로 시작일 부터의 데이터가 있음
-    # df : 시작일 - weight_months * 31 전부터 데이터가 존재하며 필요한 데이터 끌어올 용도
-    
+
     df_cal = df.loc[start_date:].copy()
     
-    # 리밸런싱 산정을 위한 wb_{col} 칼럼 생성 // weight_months 이전과 수익률 비교교
-    # -> 향후 1개월 전 가격과 비교한 수익률 칼럼으로 사용예정
     for col in raw_columns:
         df_cal[f'wb_{col}'] = (df_cal[col] - df_cal[f'prev_{col}'])/df_cal[f'prev_{col}']
         if col != 'TIP':
             df_cal[f'rb_{col}'] = float(0)
     
-    # 리밸런스 비중 결정 -> rb_{col}로 0, 0.5, 1이 존재
     for i, row in df_cal.iterrows():
         tip_return = row['wb_TIP']
         
@@ -92,23 +124,17 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
         else:
             df_cal.loc[i, 'rb_BIL'] = float(1)
     
-    # wb_col 칼럼을 1개월 전과 비교하여 수익률 계산에 사용
-    # prev_col : 1개월 전 가격
-    # wb_col : 1개월 전과 비교한 수익률 칼럼
     for col in raw_columns:
         df_cal[f'prev_{col}'] = df[col].shift(1).loc[start_date:]
         df_cal[f'wb_{col}'] = df_cal[col]/df_cal[f'prev_{col}']
-    
-    balances = raw_columns.drop('TIP') # TIP는 판단기준이고 나머지를 대상으로 진행하기 리스트 설정
+     
+    balances = raw_columns.drop('TIP') # 헷징수단인 BIL 포함 ETFs
     
     for col in balances:
-        df_cal[f'wb_{col}'][0] = 0 # 시작날 수익률 0        
+        df_cal[0,f'wb_{col}'] = 0 
     
-    # 초기 NAV = 이전 매매 최종NAV * 각 etf 수익률
-    # 목표 NAV = 초기NAv합 * etf별 리밸런싱
-    # 수수료 = |매매 전 각 etf NAV - 목표 NAV 각 etf| * fee_rate
-    # 수수료 적용 NAV = 초기NAV합 - 수수료 총합
-    # 최종 NAV = (수수료 적용 NAV) * 리밸런싱
+    # 4.
+    
     nav = 1000
     nav_list = []
     fee_list = []
@@ -121,25 +147,22 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
         nav = sum(init_navs.values())
         if i == start_date:
             nav = 1000
-        
         # 목표 nav 
         target_navs = {etf:float(row[f'rb_{etf}'])*nav for etf in balances}
-        
         # 수수료 
         fees = {etf : abs(target_navs[etf]-init_navs[etf])*fee_rate for etf in balances}
         nav -= sum(fees.values())
-        
         # 매매 후 nav
         after_navs = {etf: float(row[f'rb_{etf}'])*nav for etf in balances}
-        
         nav_list.append(sum(after_navs.values()))        
         fee_list.append(sum(fees.values()))
-        
         prev_navs = after_navs
 
     df_cal["nav"] = nav_list
     df_cal["tot_fee"] = fee_list
 
+    # 6.
+    
     # 전체 수익률
     total_return = nav_list[-1] / 1000 - 1
 
@@ -159,18 +182,167 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
     drawdowns = [nav / peak - 1 for nav, peak in zip(nav_list, running_max)]
     mdd = min(drawdowns)
     
-
-
-
-    # return df_cal
     return {
-        "output": {
+        "result": {
+            "nav_list": nav_list,
+            "df_cal": df_cal,
+            "balances": balances
+        },
+        "metrics": {
             "total_return": round(total_return, 4),
             "cagr": round(cagr, 4),
             "vol": round(volatility, 4),
             "sharpe": round(sharpe, 4),
             "mdd": round(mdd, 4),
         },
-        "last_nav": [(f"{etf}",df_cal[f'rb_{etf}'][-1]) for etf in balances],
+        "last_rebalance_weight": [
+            [etf, float(df_cal[f'rb_{etf}'].iloc[-1])] for etf in balances
+        ]
     }
         
+def save_result(db: Session,df_cal: pd.DataFrame,nav_list: list[float],balances: list[str],start_year: int,
+        start_month: int,initial_balance: int,trade_day: int,fee_rate: float,weight_months: int):
+    """ 
+    입력값 + 백테스트 결과를 DB에 저장하고 data_id 반환 
+    1. BacktestRequest
+    저장된 data_id로 아래 테이블 key 사용
+    2. Rebalance
+    3. NAV
+    """
+
+    request_obj = models.BacktestRequest(
+        start_year=start_year,
+        start_month=start_month,
+        initial_balance=initial_balance,
+        trade_day=trade_day,
+        fee_rate=fee_rate,
+        weight_months=weight_months
+    )
+    db.add(request_obj)
+    db.commit()
+    db.refresh(request_obj)  # 자동 생성된 data_id 획득
+    data_id = request_obj.data_id
+    
+    tickers = (
+    db.query(models.ETFPrice.ticker)
+    .filter(models.ETFPrice.ticker != "TIP")
+    .distinct()
+    .all()
+    )
+    balances = [t[0] for t in tickers]
+    
+    for i, row in df_cal.iterrows():
+        rebalance_date = i  # index = 날짜
+
+        for etf in balances:
+            weight = float(row.get(f"rb_{etf}", 0.0)) 
+            db.add(models.Rebalance(
+                data_id=data_id,
+                date=rebalance_date,
+                ticker=etf,
+                weight=weight
+            ))
+
+    for i, nav in zip(df_cal.index, nav_list):
+        db.add(models.Nav(
+            data_id=data_id,
+            date=i,
+            nav_total=nav
+        ))
+
+    db.commit()
+
+    return data_id
+
+
+# 목록 불러오기
+def get_backtest_list(db: Session):
+    records = db.query(models.BacktestRequest).all()
+    result = []
+    for req in records:
+        latest_weights = db.query(models.Rebalance)\
+            .filter(models.Rebalance.data_id == req.data_id)\
+            .order_by(models.Rebalance.date.desc()).all()
+
+        if latest_weights:
+            last_date = latest_weights[0].date
+            weights = [
+                (w.ticker, w.weight)
+                for w in latest_weights if w.date == last_date
+            ]
+        else:
+            weights = []
+
+        result.append({
+            "data_id": req.data_id,
+            "last_rebalance_weight": weights
+        })
+
+    return result
+
+
+
+def get_summary(db: Session, data_id: int):
+    """
+    1. data_id 유무 조회
+    
+    2. NAV 테이블로부터 데이터를 조회하고 통계값 계산
+    
+    3. Rebalance 테이블로 부터 last_balance_weight 조회
+    """
+    request = db.query(models.BacktestRequest).filter(models.BacktestRequest.data_id == data_id).first()
+    if not request:
+        return None
+
+    # NAV 및 통계 계산을 위한 NAV 전체 가져오기
+    navs = db.query(models.Nav).filter(models.Nav.data_id == data_id).order_by(models.Nav.date).all()
+    nav_list = [float(nav.nav_total) for nav in navs]
+    if len(nav_list) < 2:
+        return None
+
+    # 통계 계산
+    total_return = nav_list[-1] / 1000 - 1
+    num_years = len(nav_list) / 12
+    cagr = (nav_list[-1] / 1000)**(1/num_years) - 1 if num_years > 0 else 0
+    monthly_returns = pd.Series(nav_list).pct_change().dropna()
+    volatility = monthly_returns.std() * (12 ** 0.5)
+    sharpe = cagr / volatility if volatility > 0 else 0
+    running_max = np.maximum.accumulate(nav_list)
+    drawdowns = [nav / peak - 1 for nav, peak in zip(nav_list, running_max)]
+    mdd = min(drawdowns)
+
+    latest_rebalances = db.query(models.Rebalance).filter(models.Rebalance.data_id == data_id).order_by(desc(models.Rebalance.date)).all()
+    if not latest_rebalances:
+        weights = []
+    else:
+        last_date = latest_rebalances[0].date
+        weights = [(rb.ticker, rb.weight) for rb in latest_rebalances if rb.date == last_date]
+
+    return {
+        "input": {
+            "start_year": request.start_year,
+            "start_month": request.start_month,
+            "invest": request.initial_balance,
+            "trade_date": request.trade_day,
+            "cost": float(request.fee_rate),
+            "caculate_month": request.weight_months
+        },
+        "output": {
+            "data_id": data_id,
+            "total_return": round(total_return, 4),
+            "cagr": round(cagr, 4),
+            "vol": round(volatility, 4),
+            "sharpe": round(sharpe, 4),
+            "mdd": round(mdd, 4)
+        },
+        "last_rebalance_weight": weights
+    }
+
+def delete_input(db: Session, data_id: int):
+    """ data_id로 BacktestRequest 모델 조회 및 삭제(타 테이블은 CASCADE)"""
+    request = db.query(models.BacktestRequest).filter_by(data_id=data_id).first()
+    if not request:
+        raise ValueError(f"data_id {data_id} not found")
+    db.delete(request) 
+    db.commit()
+    return True
