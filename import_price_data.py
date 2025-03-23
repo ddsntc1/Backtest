@@ -1,10 +1,14 @@
 import pandas as pd
 from sqlalchemy import create_engine
 import sqlalchemy.types
+from dotenv import load_dotenv
+load_dotenv()
+
+import os
 
 def price_data(path):
 
-    DATABASE_URL="postgresql://backtest:backtest@127.0.0.1:5432/backtest"
+    DATABASE_URL=os.getenv('DATABASE_URL')
     engine = create_engine(DATABASE_URL)
 
     try:

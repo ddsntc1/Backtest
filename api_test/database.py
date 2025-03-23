@@ -1,8 +1,12 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+import os
 
-DATABASE_URL="postgresql://backtest:backtest@127.0.0.1:5432/backtest"
+load_dotenv()
+
+DATABASE_URL=os.getenv('DATABASE_URL')
 
 engine = create_engine(DATABASE_URL)
 

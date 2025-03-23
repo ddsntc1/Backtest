@@ -8,8 +8,10 @@ from sqlalchemy.orm import sessionmaker
 from bs4 import BeautifulSoup
 from urllib.request import Request,urlopen
 
+from dotenv import load_dotenv
+load_dotenv()
 
-DATABASE_URL = "postgresql://backtest:backtest@127.0.0.1:5432/backtest"
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 logging.basicConfig(
     filename="update_prices.log",
