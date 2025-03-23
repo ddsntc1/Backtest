@@ -196,7 +196,7 @@ GRANT ALL PRIVILEGES ON DATABASE backtest TO backtest;
 
 ```
 #env 내용입니다.
-DATABASE_URL = "postgresql://backtest:backtest@127.0.0.1:5432/backtest"
+DATABASE_URL = postgresql://backtest:backtest@127.0.0.1:5432/backtest
 ```
 
 ---
