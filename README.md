@@ -191,6 +191,7 @@ CREATE DATABASE backtest;
 CREATE USER backtest WITH PASSWORD 'backtest';
 GRANT ALL PRIVILEGES ON DATABASE backtest TO backtest;
 ```
+> Linux환경에서 실행시 backtest로 로그인하기 위해 /etc/postgresql/{버전}/main/pg_hba.conf 에서 인증방식을 변경해야 할 수 있습니다. Peer -> md5
 
 > DB 연결 정보는 `.env` 또는 `DATABASE_URL` 환경변수로 관리합니다.
 
