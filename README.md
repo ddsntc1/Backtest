@@ -194,7 +194,10 @@ GRANT ALL PRIVILEGES ON DATABASE backtest TO backtest;
 
 > DB 연결 정보는 `.env` 또는 `DATABASE_URL` 환경변수로 관리합니다.
 
-> DATABASE_URL = "postgresql://backtest:backtest@127.0.0.1:5432/backtest"
+```
+#env 내용입니다.
+DATABASE_URL = "postgresql://backtest:backtest@127.0.0.1:5432/backtest"
+```
 
 ---
 ## 📦 import_price_data (초기 가격 데이터)
