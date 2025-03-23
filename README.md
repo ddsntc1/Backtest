@@ -89,7 +89,7 @@ ETF 가격을 정기적으로 업데이트하기 위한 배치 스크립트입�
 ```bat
 @echo off
 cd /d "%~dp0"  
-call "..\backtest\Scripts\activate.bat"
+call "..\{가상환경 이름름}\Scripts\activate.bat"
 python update_prices.py
 ```
 
