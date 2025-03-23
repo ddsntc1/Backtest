@@ -196,6 +196,7 @@ GRANT ALL PRIVILEGES ON DATABASE backtest TO backtest;
 
 ```
 #env 내용입니다.
+# 위치 : 최상위 경로
 DATABASE_URL = postgresql://backtest:backtest@127.0.0.1:5432/backtest
 ```
 
