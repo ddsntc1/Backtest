@@ -346,3 +346,56 @@ def delete_input(db: Session, data_id: int):
     db.delete(request) 
     db.commit()
     return True
+
+
+def test_backtest_df(db : Session, start_year: int, start_month:int, trade_day : int, weight_months:int,fee_rate:float):
+    start_date = get_weekday(date(start_year,start_month,trade_day))
+    df_prices = get_prices(db,start_date,weight_months)
+    if df_prices.empty:
+        return {'error':"가격데이터를 찾을 수 없습니다."}
+    if weight_months >= start_month:
+        set_month = start_month - weight_months + 12
+        set_year = start_year-1
+    else : 
+        set_month = start_month - weight_months
+        set_year = start_year
+    trade_dates = pd.date_range(start=pd.Timestamp(set_year,set_month,1), end=df_prices.index[-1],freq='MS')
+    trade_dates = [get_valid_date(date,trade_day) for date in trade_dates]
+    valid_trade_dates = [d for d in trade_dates if d in df_prices.index]
+    df = df_prices.loc[valid_trade_dates]
+    raw_columns = df.columns 
+    etfs = raw_columns.drop(['BIL','TIP']) 
+    for col in raw_columns:
+        df[f'prev_{col}'] = df[col].shift(weight_months)
+    df_cal = df.loc[start_date:].copy()
+    for col in raw_columns:
+        df_cal[f'wb_{col}'] = (df_cal[col] - df_cal[f'prev_{col}'])/df_cal[f'prev_{col}']
+        if col != 'TIP':
+            df_cal[f'rb_{col}'] = float(0)
+    for i, row in df_cal.iterrows():
+        tip_return = row['wb_TIP']
+        if tip_return >= 0:
+            selected = sorted(
+                [(etf,row[f'wb_{etf}']) for etf in etfs],
+                key= lambda x : x[1],
+                reverse= True)[:2]
+            for etf,_ in selected:
+                df_cal.loc[i, f'rb_{etf}'] = float(0.5)
+        else:
+            df_cal.loc[i, 'rb_BIL'] = float(1)
+    for col in raw_columns:
+        df_cal[f'prev_{col}'] = df[col].shift(1).loc[start_date:]
+        df_cal[f'wb_{col}'] = df_cal[col]/df_cal[f'prev_{col}']
+    balances = raw_columns.drop('TIP') # 헷징수단인 BIL 포함 ETFs
+    for col in balances:
+        df_cal.loc[df_cal.index[0], f'wb_{col}'] = 0.0
+        
+    df_t = pd.DataFrame(index=df_cal.index).reset_index()
+    df_t.rename(columns={"index": "date"}, inplace=True)
+
+    for col in raw_columns:
+        df_t[col] = df_cal[col].values
+    for col in balances:
+        df_t[f'rb_{col}'] = df_cal[f'rb_{col}'].values
+    
+    return df_t.round(2).to_dict(orient="records")

@@ -1,6 +1,6 @@
 # ETF Backtesting API
 
-[자가평가.md](자가평가.md)
+자가평가 바로가기 👉 [자가평가.md](자가평가.md)
 
 ## 🔧 가상환경 세팅 및 의존성 설치
 
@@ -49,8 +49,135 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-### 2. Swagger 문서 확인
+### 2. Swagger 문서 및 API 내용
 - [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+<details>
+<summary> API 확인하기 </summary>
+
+#### 공통 정보
+
+| 항목 | 내용 |
+|------|------|
+| Base URL | `/backtest` |
+| Response Format | JSON |
+| Auth | 없음 |
+
+---
+
+#### 기능 1. 백테스트 실행 및 저장
+
+- **Method**: `POST`
+- **URL**: `/backtest/run`
+- **Description**: 입력값을 바탕으로 백테스트 계산 후 DB에 저장하고 결과 반환
+
+##### ✅ Request Body
+```json
+{
+  "start_year": 2020,
+  "start_month": 1,
+  "trade_day": 10,
+  "initial_balance": 1000,
+  "fee_rate": 0.001,
+  "weight_months": 6
+}
+```
+
+##### ✅ Response
+```json
+{
+  "data_id": 1,
+  "output": {
+    "total_return": 0.66,
+    "cagr": 0.1043,
+    "vol": 0.121,
+    "sharpe": 0.86,
+    "mdd": -0.1947
+  },
+  "last_rebalance_weight": [
+    ["SPY", 0.5],
+    ["QQQ", 0.5],
+    ["BIL", 0.0]
+  ]
+}
+```
+---
+
+#### 기능  2. 백테스트 전체 목록 조회
+
+- **Method**: `GET`
+- **URL**: `/backtest/`
+- **Description**: 저장된 모든 백테스트 `data_id`와 마지막 리밸런싱 비중 반환
+
+##### ✅ Response
+```json
+[
+  {
+    "data_id": 1,
+    "last_rebalance_weight": [["SPY", 0.5], ["QQQ", 0.5], ["BIL", 0.0]]
+  },
+  {
+    "data_id": 2,
+    "last_rebalance_weight": [["GLD", 0.5], ["QQQ", 0.5], ["BIL", 0.0]]
+  }
+]
+```
+---
+
+#### 기능 3. 특정 백테스트 결과 조회
+
+- **Method**: `GET`
+- **URL**: `/backtest/{data_id}`
+- **Description**: 특정 `data_id`의 입력값 + 통계 + 마지막 리밸런싱 비중 반환
+
+##### ✅ Response
+```json
+{
+  "input": {
+    "start_year": 2020,
+    "start_month": 1,
+    "invest": 1000,
+    "trade_date": 10,
+    "cost": 0.001,
+    "caculate_month": 6
+  },
+  "output": {
+    "data_id": 1,
+    "total_return": 0.66,
+    "cagr": 0.1043,
+    "vol": 0.121,
+    "sharpe": 0.86,
+    "mdd": -0.1947
+  },
+  "last_rebalance_weight": [
+    ["SPY", 0.5],
+    ["QQQ", 0.5],
+    ["BIL", 0.0]
+  ]
+}
+```
+---
+
+#### 기능 4. 백테스트 삭제
+
+- **Method**: `DELETE`
+- **URL**: `/backtest/{data_id}`
+- **Description**: 특정 `data_id`의 백테스트 결과 삭제
+
+##### ✅ Response
+```json
+{
+  "data_id": 2
+}
+```
+
+#### 테스트용 API
+
+| Endpoint | 설명 |
+|----------|------|
+| `/backtest/test` | 매매 date 및 ETF 가격 DataFrame을 JSON으로 반환 |
+
+</details>
 
 ---
 
