@@ -13,15 +13,25 @@ router = APIRouter(prefix="/backtest",)
     
 @router.post("/run")
 def run_backtest(rq: BacktestRequestSchema,db: Session = Depends(get_db)):
+    
+    try:
+        input_date = date(rq.start_year, rq.start_month, rq.trade_day)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="입력한 날짜가 잘못되었습니다. 존재하지 않는 날짜이거나 범위 초과입니다."
+        )
 
         
     min_date_db =  db.query(func.min(models.ETFPrice.date)).scalar()
-    min_date = date(rq.start_year,rq.start_month,rq.trade_day) - relativedelta(months=rq.weight_months)
+    min_date = input_date - relativedelta(months=rq.weight_months)
+    max_date_db = db.query(func.max(models.ETFPrice.date)).scalar()
     
-    if min_date < min_date_db:
+        
+    if min_date < min_date_db or input_date > max_date_db:
         raise HTTPException(
             status_code= 400,
-            detail=f"데이터가 {min_date_db.strftime('%Y-%m-%d')} 이후부터 존재합니다. 시작일로부터 {rq.weight_months}개월 전 데이터가 존재하지 않습니다."
+            detail=f"데이터가 {min_date_db.strftime('%Y-%m-%d')} 이후부터 {max_date_db.strftime('%Y-%m-%d')} 까지 존재합니다."
         )
         
     
