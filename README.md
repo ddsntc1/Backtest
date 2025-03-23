@@ -40,6 +40,32 @@ pip install -r requirements.txt
 ```
 
 ---
+## 🗃️ Database 설정
+
+PostgreSQL에서 `backtest` DB와 유저를 아래와 같이 생성합니다:
+
+```sql
+CREATE DATABASE backtest;
+CREATE USER backtest WITH PASSWORD 'backtest';
+GRANT ALL PRIVILEGES ON DATABASE backtest TO backtest;
+```
+> Linux환경에서 실행시 backtest로 로그인하기 위해 /etc/postgresql/{버전}/main/pg_hba.conf 에서 인증방식을 변경해야 할 수 있습니다. Peer -> md5
+
+> DB 연결 정보는 `.env` 또는 `DATABASE_URL` 환경변수로 관리합니다.
+
+```
+#env 내용입니다.
+# 위치 : 최상위 경로
+DATABASE_URL = postgresql://backtest:backtest@127.0.0.1:5432/backtest
+```
+
+---
+## 📦 import_price_data (초기 가격 데이터)
+과제 내용 중 주어진 가격데이터를 데이터베이스에 넣는 과정 입니다.
+```bash
+# 프로젝트 폴더/
+python import_price_data.py
+```
 
 ## 🏃 프로젝트 실행
 
@@ -182,35 +208,6 @@ uvicorn main:app --reload
 
 ---
 
-## 🗃️ Database 설정
-
-PostgreSQL에서 `backtest` DB와 유저를 아래와 같이 생성합니다:
-
-```sql
-CREATE DATABASE backtest;
-CREATE USER backtest WITH PASSWORD 'backtest';
-GRANT ALL PRIVILEGES ON DATABASE backtest TO backtest;
-```
-> Linux환경에서 실행시 backtest로 로그인하기 위해 /etc/postgresql/{버전}/main/pg_hba.conf 에서 인증방식을 변경해야 할 수 있습니다. Peer -> md5
-
-> DB 연결 정보는 `.env` 또는 `DATABASE_URL` 환경변수로 관리합니다.
-
-```
-#env 내용입니다.
-# 위치 : 최상위 경로
-DATABASE_URL = postgresql://backtest:backtest@127.0.0.1:5432/backtest
-```
-
----
-## 📦 import_price_data (초기 가격 데이터)
-과제 내용 중 주어진 가격데이터를 데이터베이스에 넣는 과정 입니다.
-```bash
-# 프로젝트 폴더/
-python import_price_data.py
-```
-
-
-
 ## 📦 배치 프로그램 (증시 마감 후 가격 업데이트)
 
 ETF 가격을 정기적으로 업데이트하기 위한 배치 스크립트입니다.
@@ -245,8 +242,10 @@ crontab -e
 > `venv` 경로와 `update_prices.py` 경로는 실제 환경에 맞게 수정해주세요.
 
 ---
+
 ## 📓 Prices 테이블 초기화
-테스트 진행 중 bat 파일을 실행시키면 데이터가 입력 될 것이라 생각하여 편리한 테스트를 위해 아래 SQL문을 넣었습니다.
+
+배치 프로그램 테스트 진행 중 bat 파일을 실행시키면 데이터가 입력 될 것이라 생각하여 편리한 테스트를 위해 아래 SQL문을 넣었습니다.
 ```sql
 # psql내 실행 -> 기존 데이터 삭제 및 인덱스 초기화
 TRUNCATE TABLE prices RESTART IDENTITY;
