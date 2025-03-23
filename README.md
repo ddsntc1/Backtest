@@ -7,7 +7,7 @@
 ### 1. Python 가상환경 생성
 
 ```bash
-# .bat실행에 문제없도록 'backtest'명의 가상환경을 github와 동일 디렉토리에 설치 부탁드립니다.
+# .bat실행에 문제없도록 'backtest'명의 가상환경을 본 프로젝트와와 동일 디렉토리에 설치 부탁드립니다.
 # .
 # ├── Backtest  -> 가상환경
 # ├── Project /
@@ -52,8 +52,9 @@ uvicorn main:app --reload
 ### 2. Swagger 문서 및 API 내용
 - [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
+
 <details>
-<summary> API 확인하기 </summary>
+<summary> <h3><b>API 확인하기</b></h3> </summary>
 
 #### 공통 정보
 
