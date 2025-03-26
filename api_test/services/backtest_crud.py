@@ -22,21 +22,24 @@ def get_valid_date(base_date: date, trade_day: int):
     target_date = date(year, month, target_day)
     return get_weekday(target_date)
 
-def get_prices(db:Session, start_date: date,weight_months: int):
+def get_prices(db: Session, start_date: date, weight_months: int):
     """날짜별 ETF 가격 가져오기"""
-    
-    from_date = get_weekday(start_date - relativedelta(months= weight_months))
-    
-    prices_query = text("""
-                        SELECT date,ticker,MAX(price)
-                        FROM prices
-                        WHERE date >= :start_date
-                        GROUP BY date,ticker
-                        ORDER BY date ASC;
-                        """)
-    price_data = db.execute(prices_query,{"start_date":from_date})
-    df = pd.DataFrame(price_data,columns=['date','ticker','price'])
-    df_pivot = df.pivot(index='date',columns='ticker',values='price')
+    from_date = get_weekday(start_date - relativedelta(months=weight_months))
+    # ORM 쿼리 사용
+    price_data = db.query(models.ETFPrice)\
+        .filter(models.ETFPrice.date >= from_date)\
+        .order_by(models.ETFPrice.date)\
+        .all()
+    if not price_data:
+        return pd.DataFrame()
+    # 리스트를 DataFrame으로 변환
+    df = pd.DataFrame(
+        [(p.date, p.ticker, float(p.price)) for p in price_data],
+        columns=['date', 'ticker', 'price']
+    )
+    # 피벗
+    df_pivot = df.pivot(index='date', columns='ticker', values='price')
+
     return df_pivot
 
 
@@ -199,77 +202,75 @@ def calculate_backtest(db : Session, start_year: int, start_month:int, trade_day
             [etf, float(df_cal[f'rb_{etf}'].iloc[-1])] for etf in balances
         ]
     }
-        
-def save_result(db: Session,df_cal: pd.DataFrame,nav_list: list[float],balances: list[str],start_year: int,
-        start_month: int,initial_balance: int,trade_day: int,fee_rate: float,weight_months: int):
-    """ 
-    입력값 + 백테스트 결과를 DB에 저장하고 data_id 반환 
-    1. BacktestRequest
-    저장된 data_id로 아래 테이블 key 사용
-    2. Rebalance
-    3. NAV
+  
+def save_result(
+    db: Session,
+    df_cal: pd.DataFrame,
+    nav_list: list[float],
+    balances: list[str],
+    start_year: int,
+    start_month: int,
+    initial_balance: int,
+    trade_day: int,
+    fee_rate: float,
+    weight_months: int
+):
+    """
+    입력값 + 백테스트 결과를 DB에 저장하고 data_id 반환
+    BacktestRequest에 nav_result, rebalance_result를 JSON으로 저장
     """
 
+    # rebalance_result 생성 (list of dict)
+    rebalance_result = []
+    for i, row in df_cal.iterrows():
+        rebalance_date = i  # index = 날짜
+        weights = {
+            etf: float(row.get(f"rb_{etf}", 0.0)) for etf in balances
+        }
+        rebalance_result.append({
+            "date": rebalance_date.isoformat(),  # JSON 직렬화를 위한 문자열 처리
+            "weights": weights
+        })
+
+    # nav_result 생성 (list of dict)
+    nav_result = [
+        {"date": i.isoformat(), "nav": float(nav)}
+        for i, nav in zip(df_cal.index, nav_list)
+    ]
+
+    # BacktestRequest에 저장
     request_obj = models.BacktestRequest(
         start_year=start_year,
         start_month=start_month,
         initial_balance=initial_balance,
         trade_day=trade_day,
         fee_rate=fee_rate,
-        weight_months=weight_months
+        weight_months=weight_months,
+        nav_result=nav_result,
+        rebalance_result=rebalance_result
     )
     db.add(request_obj)
     db.commit()
-    db.refresh(request_obj)  # 자동 생성된 data_id 획득
-    data_id = request_obj.data_id
-    
-    tickers = (
-    db.query(models.ETFPrice.ticker)
-    .filter(models.ETFPrice.ticker != "TIP")
-    .distinct()
-    .all()
-    )
-    balances = [t[0] for t in tickers]
-    
-    for i, row in df_cal.iterrows():
-        rebalance_date = i  # index = 날짜
+    db.refresh(request_obj)
 
-        for etf in balances:
-            weight = float(row.get(f"rb_{etf}", 0.0)) 
-            db.add(models.Rebalance(
-                data_id=data_id,
-                date=rebalance_date,
-                ticker=etf,
-                weight=weight
-            ))
-
-    for i, nav in zip(df_cal.index, nav_list):
-        db.add(models.Nav(
-            data_id=data_id,
-            date=i,
-            nav_total=nav
-        ))
-
-    db.commit()
-
-    return data_id
+    return request_obj.data_id
 
 
 # 목록 불러오기
 def get_backtest_list(db: Session):
     records = db.query(models.BacktestRequest).all()
     result = []
-    for req in records:
-        latest_weights = db.query(models.Rebalance)\
-            .filter(models.Rebalance.data_id == req.data_id)\
-            .order_by(models.Rebalance.date.desc()).all()
 
-        if latest_weights:
-            last_date = latest_weights[0].date
-            weights = [
-                (w.ticker, w.weight)
-                for w in latest_weights if w.date == last_date
-            ]
+    for req in records:
+        rebalance_data = req.rebalance_result  # JSON 필드
+
+        if rebalance_data:
+            last_entry = max(rebalance_data, key=lambda x: x["date"])
+            last_date = last_entry["date"]
+
+            # weights 구조 고려해서 파싱
+            weights_dict = last_entry.get("weights", {})
+            weights = [(ticker, weight) for ticker, weight in weights_dict.items()]
         else:
             weights = []
 
@@ -282,23 +283,25 @@ def get_backtest_list(db: Session):
 
 
 
+
 def get_summary(db: Session, data_id: int):
     """
     1. data_id 유무 조회
-    
-    2. NAV 테이블로부터 데이터를 조회하고 통계값 계산
-    
-    3. Rebalance 테이블로 부터 last_balance_weight 조회
+    2. BacktestRequest에 저장된 nav_result 기반으로 통계값 계산
+    3. rebalance_result로부터 마지막 리밸런싱 비중 추출
     """
     request = db.query(models.BacktestRequest).filter(models.BacktestRequest.data_id == data_id).first()
     if not request:
         return None
 
-    # NAV 및 통계 계산을 위한 NAV 전체 가져오기
-    navs = db.query(models.Nav).filter(models.Nav.data_id == data_id).order_by(models.Nav.date).all()
-    nav_list = [float(nav.nav_total) for nav in navs]
-    if len(nav_list) < 2:
+    # nav_result에서 NAV 리스트 추출
+    nav_data = request.nav_result or []
+    if len(nav_data) < 2:
         return None
+
+    # 날짜순 정렬 후 nav만 추출
+    sorted_nav = sorted(nav_data, key=lambda x: x["date"])
+    nav_list = [float(row["nav"]) for row in sorted_nav]
 
     # 통계 계산
     total_return = nav_list[-1] / 1000 - 1
@@ -311,12 +314,15 @@ def get_summary(db: Session, data_id: int):
     drawdowns = [nav / peak - 1 for nav, peak in zip(nav_list, running_max)]
     mdd = min(drawdowns)
 
-    latest_rebalances = db.query(models.Rebalance).filter(models.Rebalance.data_id == data_id).order_by(desc(models.Rebalance.date)).all()
-    if not latest_rebalances:
-        weights = []
+    # rebalance_result에서 가장 최근 날짜 추출
+    rebalance_data = request.rebalance_result or []
+    if rebalance_data:
+        # 가장 최근 날짜 entry 가져오기
+        last_entry = max(rebalance_data, key=lambda x: x["date"])
+        weights_dict = last_entry.get("weights", {})  # weights 딕셔너리 꺼내기
+        weights = [(ticker, weight) for ticker, weight in weights_dict.items()]
     else:
-        last_date = latest_rebalances[0].date
-        weights = [(rb.ticker, rb.weight) for rb in latest_rebalances if rb.date == last_date]
+        weights = []
 
     return {
         "input": {
@@ -337,6 +343,7 @@ def get_summary(db: Session, data_id: int):
         },
         "last_rebalance_weight": weights
     }
+
 
 def delete_input(db: Session, data_id: int):
     """ data_id로 BacktestRequest 모델 조회 및 삭제(타 테이블은 CASCADE)"""
